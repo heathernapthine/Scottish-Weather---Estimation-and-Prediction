@@ -1,0 +1,737 @@
+---
+title: "StatComp Project 2: Scottish weather"
+author: "Heather Napthine (s2065896)"
+output:
+  html_document:
+    number_sections: no
+  pdf_document:
+    number_sections: no
+header-includes:
+  - \newcommand{\bm}[1]{\boldsymbol{#1}}
+  - \newcommand{\mat}[1]{\begin{bmatrix}#1\end{bmatrix}}
+---
+
+```{r setup, include = FALSE}
+# Modify this setup code chunk to set options
+# or add extra packages etc if needed.
+# See the project instructions for more details
+# on what code to show, and where/how.
+
+# Set default code chunk options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE
+)
+
+suppressPackageStartupMessages(library(tidyverse))
+theme_set(theme_bw())
+suppressPackageStartupMessages(library(StatCompLab))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(grid))
+suppressPackageStartupMessages(library(gridExtra))
+
+# To give the same random number sequence every time the document is knit:ed,
+# making it easier to discuss the specific numbers in the text:
+set.seed(12345L)
+```
+
+```{r code=readLines("functions.R"), eval=TRUE, echo=FALSE}
+# Do not change this code chunk
+# Load function definitions
+source("functions.R")
+```
+
+
+# Seasonal variability
+
+The Global Historical Climatology Network provides historical weather data collected from all over the globe. We will conduct our analysis using a subset of the daily resolution data set, containing data from eight weather stations in Scotland, covering the time period from 1 January 1960 to 31 December 2018.
+
+We begin by plotting the temperature and precipitation data to show the behaviour across the most recent year, 2018, for all of the eight stations.
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Load the data.
+data(ghcnd_stations, package = "StatCompLab")
+data(ghcnd_values, package = "StatCompLab")
+
+# Join data frames, to assign names to stations.
+ghcnd <- left_join(ghcnd_values, ghcnd_stations, by = "ID")
+
+# Filter data to individual year for plotting.
+ghcnd_2018 <- filter(ghcnd, Year == "2018")
+
+# Create plot of temperatures at each station, across the year.
+TemperaturePlot <- ghcnd_2018 %>%
+  filter(Element %in% c("TMIN", "TMAX")) %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(Month, Value, colour = Element)) +
+  geom_line() + xlim(c(1,12)) + scale_x_continuous(breaks = seq(1,12,by=1)) +
+  ggtitle("Average Monthly Temperature (2018)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name)
+
+# Create plot of precipitation at each station, across the year.
+PrecipitationPlot <- ghcnd_2018 %>%
+  filter(Element %in% c("PRCP")) %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(Month, Value, colour = Element)) +
+  geom_line() + xlim(c(1,12)) + scale_x_continuous(breaks = seq(1,12,by=1)) +
+  ggtitle("Average Monthly Precipitation (2018)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name)
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE, fig.align = 'center', fig.width=10, fig.height=6}
+
+# Display plot of temperature data.
+TemperaturePlot
+
+# Display plot of precipitation data.
+PrecipitationPlot
+```
+
+The figure displaying the temperature readings, as one would expect, shows an obvious seasonal effect for temperature across all of the eight stations, i.e. it is much colder in winter than it is in summer.
+
+There is however no consistent trend in the precipitation data across the eight stations. Precipitation appears fairly constant, year-round, although we do observe increased variability for the Benmore: Younger Botanic Garden Station. All stations experience the highest levels of precipitation in March or November, except for the stations Penicuik and Benmore: Younger Botanic Garden Station, which experience the greatest precipitation in April and January, respectively.
+
+We now define the winter months to be the set, {Jan, Feb, Mar, Oct, Nov, Dec}, and let the summer months consist of the set {Apr, May, Jun, Jul, Aug, Sep}. We add this information to the weather data object, contained within a column entitled ‘Season’, which is defined to be either "winter”, or "summer" depending on which season the month each individual reading was taken in, belongs to.
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Add season information to the weather data object.
+ghcnd <- ghcnd %>% mutate(Season = if_else(Month %in% c(1,2,3,10,11,12),
+                                            "winter", "summer"))
+```
+
+We now wish to construct a Monte Carlo permutation test for the hypotheses: 
+$$H0 :\text{ The rainfall distribution is the same in winter as in summer}$$
+$$H1 :\text{ The winter and summer distributions have different expected values}$$
+To do this we can add a Summer column to the data that is "TRUE" for readings taken in the defined summer months, and "FALSE" for those taken in winter. This then allows us to use the test statistic $T = |\text{winter average − summer average}|$. We can then filter the data such that we only consider readings corresponding to precipitation. We can then compute separate p-values for each weather station and their respective Monte Carlo standard deviations.
+
+As seen in the Project2 hints document we can let p be the unknown p-value, and $X \sim Bin(N, p)$ be the random variable for how many times we observe a randomised test statistic as extreme as, or more extreme than the observed test statistic. We observe $X = x$ and estimate the p-value with $\hat{p} = x/N$. When computing the test statistic defined above, across our different permutations, we often observe no test statistics, as extreme as, or more extreme than our unpermuted case. This results in a count of $x = 0$, thus giving us an estimate for our p-value, $\hat{p} = x/N$, as zero. Fortunately, if we observe zero counts, we can construct a confidence interval using an exact method, instead of relying on the Normal approximation.
+
+When $x > 0$, the central limit theorem gives us a basic approximate $95\%$ confidence interval for $p$,
+$$CI_p = \hat{p} \pm z_{0.975} \sqrt{ \frac{ \hat{p}(1 − \hat{p})}{ N}} = \frac{x}{N} \pm z_{0.975}\sqrt{ \frac{x(N - x)}{ N^3}}.$$
+Where in order to limit the interval width for our permutation test we can consider a large value of $N = 10000$ permutations.
+
+If instead, the observed count is $x = 0$, we can go back to the definition of a confidence interval and the interval is taken to be the set for which the corresponding null hypothesis is not rejected. The set of $p_0$ values for which the test is not rejected is $p_0 \leq 1 − 0.025^{1/N}$, so when $x = 0$ we can define the confidence interval for $p$ as
+$$CI_p = (0, 1 − 0.025^{1/N}).$$
+The width of these such confidence intervals grow much more slowly than the intervals calculated using the normal approximation described above, thus, we can continue to use the above value of $N = 10000$ and still control the interval width.
+
+We can then also compute the respective Monte Carlo standard deviations for each estimated p-value using $\sqrt{Var(\hat{p})} = \sqrt{\frac{p(1-p)}{N}}$. We calculate this alongside the described intervals.
+
+The results of the described test are presented in the following table:
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Add a Summer column to the data that is TRUE for data
+# in the defined summer months.
+ghcnd <- ghcnd %>% mutate(Summer = if_else(Month %in% c(4,5,6,7,8,9), "TRUE",
+                                            "FALSE"))
+
+# Create vector of the IDs of the eight stations.
+StationIDs <- unique(c(ghcnd$ID))
+
+# Create data frame of only precipitation data.
+precipitationdata <- ghcnd %>%
+  filter(Element %in% c("PRCP"))
+
+# Construct a version of the data set with a new variable,
+# Value_sqrt_avg, defined as the square root of the monthly
+# averaged precipitation values.
+precipitationdata <- precipitationdata %>% 
+  group_by(ID, Month, Year) %>% 
+  mutate(Value_sqrt_avg = (mean(Value))**(1/2))
+```
+
+```{r save_example, eval=FALSE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Create vector of the IDs of the eight stations.
+StationIDs <- unique(c(ghcnd$ID))
+
+# Create empty data frame.
+ConfidenceIntervals <- data.frame()
+
+# Complete permutation test for each station.
+for (id in StationIDs){
+  ConfidenceIntervals <- rbind(ConfidenceIntervals,
+                               (c(id,(p_value_CI(id, alpha = 0.05, N = 10000)))))
+}
+
+# Name columns of data.
+colnames(ConfidenceIntervals) <- c("StationID", "P Value", "lower", "upper", "MonteCarloSD")
+
+# Save long-running calculation.
+saveRDS(ConfidenceIntervals, file = "ConfidenceIntervalsDataFile/ ConfidenceIntervals.rds")
+```
+
+```{r read_example, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Read long-running calculation.
+ConfidenceIntervals <- readRDS("ConfidenceIntervalsDataFile/ ConfidenceIntervals.rds")
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE}
+
+# Display p-values, intervals and Monte-Carlo sds.
+knitr::kable(ConfidenceIntervals)
+```
+
+The results show that the p-value estimate is zero for all stations, except for the stations, Leuchars and Edinburgh: Royal Botanic Garden. At Edinburgh: Royal Botanic Garden, our p-value is incredibly high, at a value of $0.6434$, which means we would not reject the null hypothesis of the rainfall distribution being the same in winter as in summer at any reasonable significance level. At Leuchars however, our estimated p-value is $0.0248$, which is significant at the $\alpha = 0.05, \text{ and } \alpha = 0.1$ significance levels, so in these cases we would reject the null hypothesis. From our plots, we see this does indeed align with expectation as we observe a flatter rainfall distribution in the plot for Edinburgh: Royal Botanic Garden, whereas in the Leuchars plot, we do observe some more extreme values, specifically in the months of March and November.
+
+For our six other stations, we observed no counts of our test statistic being as or more extreme than the original unpermuted test statistic, which would indicate that we see the biggest difference in rainfall for the initial separation of the data into winter and summer months. We thus reject the null hypothesis, and conclude that the winter and summer distributions have different expected values. Again, this agrees with the plots above as we see significant spikes in the data for all of the remaining six six stations, eluding to the fact that the expected rainfall volume is indeed season dependent.
+
+The Monte Carlo standard errors for the described hypothesis test are very small. There is a direct correlation between the size of the standard error and the estimated p-value, however, even with the larger estimated p-values, the standard errors calculated are still very small implying that the variance is also small.
+
+# Spatial weather prediction
+
+We now construct a version of the data set with a new variable, Value_sqrt_avg, defined as the square root of the monthly averaged precipitation values. Taking the square root of the monthly averages will help in making the constant-variance model more plausible.
+
+We can now define and estimate models for the square root of the monthly averaged precipitation values in Scotland. As a basic model for the square root of monthly average precipitation, we define
+$$M_0: \text{ Value_sqrt_avg } \sim \text{ Intercept + Longitude + Latitude + Elevation + DecYear}.$$
+By adding covariates $cos(2\pi kt)$ and $sin(2\pi kt)$ of frequency $k = 1, 2, \dots$ we can also model the seasonal variability, defining models $M_1,$  $M_2$, $M_3,$ and $M_4$, where the predictor expression for model $M_k$ adds
+$$\sum_{k=1}^{N} [\gamma_{c,k} cos(2\pi kt) + \gamma_{s,k} sin(2\pi kt)]$$
+to the $M_0$ predictor expression, for model coefficients $\gamma_{c,k}$ and $\gamma_{s,k}$.
+We can then estimate the model parameters for $M_1,$  $M_2$, $M_3,$ and $M_4$. The results are presented in the following table:
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Determine model estimates for k = 0,1,2,3,4
+fit0 <- Model(precipitationdata, 0)
+fit1 <- Model(precipitationdata, 1)
+fit2 <- Model(precipitationdata, 2)
+fit3 <- Model(precipitationdata, 3)
+fit4 <- Model(precipitationdata, 4)
+
+# Create data frame of all model coeffecients.
+CoefficentData <- data.frame(cbind(
+                                c(fit0$coefficients,c(0,0,0,0,0,0,0,0)),
+                                c(fit1$coefficients,c(0,0,0,0,0,0)),
+                                c(fit2$coefficients,c(0,0,0,0)),
+                                c(fit3$coefficients,c(0,0)),
+                                fit4$coefficients))
+
+# Name rows of data frame.
+rownames(CoefficentData) <- c("Intercept", "Longitude",  "Latitude",
+                              "Elevation",   "DecYear ",
+                              "Gamma_c_1", "Gamma_s_1","Gamma_c_2",
+                              "Gamma_s_2","Gamma_c_3", "Gamma_s_3",
+                              "Gamma_c_4", "Gamma_s_4")
+
+# Name columns of data frame.
+colnames(CoefficentData) <- c("M_0", "M_1", "M_2", "M_3", "M_4")
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE}
+
+# Display table of model coefficients.
+knitr::kable(CoefficentData)
+```
+
+We see from the above coefficients that we expect rainfall to be negatively correlated with Longitude, meaning that the further west in Scotland you are the greater rainfall you can expect, this aligns with expectation. Again, we see that rainfall is negatively correlated with Latitude, although much less so than Longitude, as the coefficient is smaller in magnitude. This implies that the further South in Scotland you are the greater precipitation you can expect. This again aligns with expectation as we would expect Longitude to have a greater effect than Latitude.
+
+Both of the coefficients for Elevation and DecYear are incredibly small, meaning that we can expect much smaller dependence on these variables, when examining expected rainfall than location, i.e. latitude and longitude.
+
+In terms of all of our $\gamma$ coefficients, we see that as we increase our value of k the $\gamma_{c,k}$ and $\gamma_{s,k}$ reduce in magnitude, implying that we may be able to increase accuracy by increasing our value of $k$, as these small additional terms will allow us to more closely predict the data. To further analyse which model provides the best fit to the data we can plot the true values of the observations together with the estimate provided by each model.
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# First join the predictions given by each model to the given data, along with a label providing the model number.
+modeldata0 <- cbind(precipitationdata,fitted(fit0),
+                    replicate(nrow(precipitationdata),"M_0"))
+modeldata1 <- cbind(precipitationdata,fitted(fit1),
+                    replicate(nrow(precipitationdata),"M_1"))
+modeldata2 <- cbind(precipitationdata,fitted(fit2),
+                    replicate(nrow(precipitationdata),"M_2"))
+modeldata3 <- cbind(precipitationdata,fitted(fit3),
+                    replicate(nrow(precipitationdata),"M_3"))
+modeldata4 <- cbind(precipitationdata,fitted(fit4),
+                    replicate(nrow(precipitationdata),"M_4"))
+
+# Bind all data for all models together.
+modeldata <- rbind(modeldata0,modeldata1,modeldata2,modeldata3,modeldata4)
+
+# Convert month and value columns of data to numerics to allow us to tidy up plot axes.
+modeldata$Month <- as.numeric(modeldata$Month)
+modeldata$Value <- as.numeric(modeldata$Value)
+
+# Rename columns before plotting.
+colnames(modeldata)[15] <- "Prediction"
+colnames(modeldata)[16] <- "Model"
+
+# Create plot of all model fits.
+ModelPlot <- modeldata %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value_sqrt_avg),
+            Value2 = mean(Prediction), .groups = "drop")%>%
+  ggplot() +
+  geom_point(aes(Month, Value, colour = "True")) +
+  geom_line(aes(Month, Value2, colour = "Estimate")) +
+  ggtitle("Model Predictions vs True Data") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Model, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE, fig.align = 'center', fig.width=10, fig.height=6}
+
+# Display plot of models predictions vs true data.
+ModelPlot 
+```
+
+The figure shows that each of the models $M_2$, $M_3,$ and $M_4$ provide relatively good estimates of the data.
+
+We are also interested in how well the model can predict precipitation at new locations. Therefore, we construct a stratified cross-validation that groups the data by weather station and computes the prediction scores for each station, as well as the overall cross-validated average scores, for each of the 12 months of the year. We carry out the score assessments for both the Squared Error and Dawid-Sebastiani scores. In order to compare the scores across our different models, we begin by plotting the average scores, for both scoring methods, for each model $M_0$, $M_1$, $M_2$, $M_3,$ and $M_4$.
+
+```{r save_example2, eval=FALSE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Create data frame of scores for all models.
+AllScoresModel0 <- Scores(precipitationdata,0)
+AllScoresModel1 <- Scores(precipitationdata,1)
+AllScoresModel2 <- Scores(precipitationdata,2)
+AllScoresModel3 <- Scores(precipitationdata,3)
+AllScoresModel4 <- Scores(precipitationdata,4)
+
+# Save long-running calculation.
+saveRDS(AllScoresModel0, file = "AllScoresModel0DataFile/ AllScoresModel0.rds")
+saveRDS(AllScoresModel1, file = "AllScoresModel1DataFile/ AllScoresModel1.rds")
+saveRDS(AllScoresModel2, file = "AllScoresModel2DataFile/ AllScoresModel2.rds")
+saveRDS(AllScoresModel3, file = "AllScoresModel3DataFile/ AllScoresModel3.rds")
+saveRDS(AllScoresModel4, file = "AllScoresModel4DataFile/ AllScoresModel4.rds")
+```
+
+```{r read_example2, eval=TRUE, echo=FALSE}
+
+# Read long-running calculation.
+AllScoresModel0 <- readRDS("AllScoresModel0DataFile/ AllScoresModel0.rds")
+AllScoresModel1 <- readRDS("AllScoresModel1DataFile/ AllScoresModel1.rds")
+AllScoresModel2 <- readRDS("AllScoresModel2DataFile/ AllScoresModel2.rds")
+AllScoresModel3 <- readRDS("AllScoresModel3DataFile/ AllScoresModel3.rds")
+AllScoresModel4 <- readRDS("AllScoresModel4DataFile/ AllScoresModel4.rds")
+
+# Label the scores with coressponding model number.
+AllScoresModel0 <- cbind(AllScoresModel0,
+                    replicate(nrow(AllScoresModel0),"M_0"))
+AllScoresModel1 <- cbind(AllScoresModel1,
+                    replicate(nrow(AllScoresModel1),"M_1"))
+AllScoresModel2 <- cbind(AllScoresModel2,
+                    replicate(nrow(AllScoresModel2),"M_2"))
+AllScoresModel3 <- cbind(AllScoresModel3,
+                    replicate(nrow(AllScoresModel3),"M_3"))
+AllScoresModel4 <- cbind(AllScoresModel4,
+                    replicate(nrow(AllScoresModel4),"M_4"))
+
+# Match column names in order to bind data.
+colnames(AllScoresModel1) <- colnames(AllScoresModel0)
+colnames(AllScoresModel2) <- colnames(AllScoresModel0)
+colnames(AllScoresModel3) <- colnames(AllScoresModel0)
+colnames(AllScoresModel4) <- colnames(AllScoresModel0)
+
+# Bind all data for all models together.
+AllModelScores <- rbind(AllScoresModel0,AllScoresModel1,AllScoresModel2,
+                        AllScoresModel3,AllScoresModel4)
+
+# Rename columns before plotting.
+colnames(AllModelScores)[6] <- c("Model")
+
+# Convert month and value collumns of data to numerics to allow us to tidy up plot axes.
+AllModelScores$Month <- as.numeric(AllModelScores$Month)
+AllModelScores$Value <- as.numeric(AllModelScores$Value)
+
+# Create plot of squared error scores for all models.
+AllModelScoresPlotSE <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreSE")) %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value),.groups = "drop")%>%
+  ggplot(aes(x = Month, y = Value, colour = Model)) +
+  geom_line() +
+  ggtitle("Average Squared Error Scores for All Models")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Create plot of Dawid-Sebestiani scores for all models.
+AllModelScoresPlotDS <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreDS")) %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value),.groups = "drop")%>%
+  ggplot(aes(x = Month, y = Value, colour = Model)) +
+  geom_line() +
+  ggtitle("Average Dawid-Sebestiani Scores for All Models")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE, fig.align = 'center', fig.width=10, fig.height=3}
+
+# Display plot of SE and DS scores for all models.
+grid.arrange(AllModelScoresPlotSE, AllModelScoresPlotDS, nrow = 1)
+```
+
+The above figure shows that the scores are incredibly similar across all models, for both scoring methods, with the exception of slightly higher scores for the model $M_0$. Thus, in order to get a clearer idea of which model does indeed have the lowest scores we can take the average across all months, for each scoring method. The results are presented in the following table:
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE}
+
+# Create data frame of average scores.
+AverageModelScores <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreSE", "AverageScoreDS")) %>%
+  group_by(Model, Element) %>%
+  summarise(Value = mean(Value),.groups = "drop") %>%
+  pivot_wider(names_from = Element, values_from = Value)
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE}
+
+# Display data frame of average scores.
+knitr::kable(AverageModelScores)
+```
+
+The results show that the scores are, marginally, the lowest for the model $M_4$.
+
+To properly assess whether or not each time of year is predicted with equal accuracy, we can choose one model and plot both the Dawid-Sebestiani and Squared Error scores against the months of the year, at each individual station. In order to further assess whether or not each location is predicted with equal accuracy we add to each plot the average score for each month across all stations. Since we saw the lowest scores for the model $M_4$, we choose this model for our plot.
+
+```{r, eval=TRUE, echo=FALSE, warning = FALSE, message=FALSE, fig.align = 'center', fig.width=10, fig.height=6}
+
+# Create vector of the Names of the eight stations for plot.
+Names <- unique(c(ghcnd$Name))
+
+# Convert month and value columns of data to numerics to allow us to tidy up plot axes.
+AllScoresModel4$Month <- as.numeric(AllScoresModel4$Month)
+AllScoresModel4$Value <- as.numeric(AllScoresModel4$Value)
+
+# Create plot of the squared error scores at each station, across the year.
+ScoresPlot_SE <- AllScoresModel4 %>%
+  filter(Element %in% c("AverageScoreSE", "StationScoreSE")) %>%
+  group_by(StationID, Element, Month) %>%
+  ggplot(aes(x = Month, y = Value, colour = Element)) +
+  geom_line() +
+  ggtitle("Squared Error Scores for M_3")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+
+# Create plot of the Dawid-Sebestiani scores at each station, across the year.
+ScoresPlot_DS <- AllScoresModel4 %>%
+  filter(Element %in% c("AverageScoreDS", "StationScoreDS")) %>%
+  group_by(StationID, Element, Month) %>%
+  ggplot(aes(x = Month, y = Value, colour = Element)) +
+  geom_line() +
+  ggtitle("Dawid-Sebestiani Scores for M_3")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+```
+
+```{r, eval=TRUE, echo=TRUE, warning = FALSE, message=FALSE, fig.align = 'center', fig.width=10, fig.height=6}
+
+# Display plot of Squared Error scores for model M_4.
+ScoresPlot_SE
+
+# Display plot of Dawid-Sebestiani scores for model M_4.
+ScoresPlot_DS
+```
+
+The above figures show that the average Squared Error score is noticeably greater than the average Dawid-Sebestiani score, across all months. We recall that the squared error score is defined as 
+$$S_{SE}(F,y) = (y - \hat{y}_F)^2,$$
+where $\hat{y}_F$ is a point estimate under $F$.
+The Dawid-Sebestiani score, however is given as 
+$$S_{DS}(F,y) = \frac{(y - \mu_F)^2}{\sigma^2_F} + log(\sigma^2_F).$$
+We thus see that the Dawid-Sebestiani can take negative values while the Squared Error score is strictly positive. We also see that the Dawid-Sebestiani score takes the variance, $\sigma^2_F$, into account, while the Squared Error score does not. This may account for the Dawid-Sebestiani score's reduced values as the Dawid-Sebestiani score will reward lower variance of the data while the Squared Error score will not.
+
+We also see that the Dawid-Sebestiani score has higher variability than the Standard Error score. This makes sense as it accounts for the estimated prediction uncertainty as well as prediction accuracy.
+
+The figure also shows varying accuracy in the model predictions of the data across different months of the year. Specifically we see a trend in lower scores in the months of June, July and August. This implies that the weather is more consistent across all locations in these months and thus the model can provide a closer estimate to the true data at each individual station in these months, compared to other months of the year. 
+
+Comparing the average scores against each individual station's scores, the figure also shows evidence of significant variance in how successful the model is at predicting the data for different stations. Specifically we see that both the Squared Error and Dawid-Sebestiani scores, at the station Benmore: Younger Botanic Garden, are far higher than the average scores. Looking back at the initial plot of the precipitation data we see that this is due to this station's unique distribution of data, which is very clearly dissimilar from all of the other stations', thus meaning that the model's predictions may not provide the most accurate estimate of this data set.
+
+# Code appendix
+
+
+## Function definitions
+
+```{r code=readLines("functions.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
+
+## Analysis Code
+
+```{r, eval=FALSE, echo=TRUE}
+# QUESTION 1 - SEASONAL VARIABILITY
+
+# Load the data.
+data(ghcnd_stations, package = "StatCompLab")
+data(ghcnd_values, package = "StatCompLab")
+
+# Join data frames, to assign names to stations.
+ghcnd <- left_join(ghcnd_values, ghcnd_stations, by = "ID")
+
+# Filter data to individual year for plotting.
+ghcnd_2018 <- filter(ghcnd, Year == "2018")
+
+# Create plot of temperatures at each station, across the year.
+TemperaturePlot <- ghcnd_2018 %>%
+  filter(Element %in% c("TMIN", "TMAX")) %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(Month, Value, colour = Element)) +
+  geom_line() + xlim(c(1,12)) + 
+  scale_x_continuous(breaks = seq(1,12,by=1)) +
+  ggtitle("Average Monthly Temperature (2018)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name)
+
+# Create plot of precipitation at each station, across the year.
+PrecipitationPlot <- ghcnd_2018 %>%
+  filter(Element %in% c("PRCP")) %>%
+  group_by(ID, Name, Element, Month) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(Month, Value, colour = Element)) +
+  geom_line() + xlim(c(1,12)) + 
+  scale_x_continuous(breaks = seq(1,12,by=1)) +
+  ggtitle("Average Monthly Precipitation (2018)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name)
+
+# Display plot of temperature data.
+TemperaturePlot
+
+# Display plot of precipitation data.
+PrecipitationPlot
+
+# Add season information to the weather data object.
+ghcnd <- ghcnd %>% mutate(Season = if_else(Month %in% c(1,2,3,10,11,12),
+                                            "winter", "summer"))
+# Add a Summer column to the data that is TRUE for data
+# in the defined summer months.
+ghcnd <- ghcnd %>% mutate(Summer = if_else(Month %in% c(4,5,6,7,8,9), "TRUE",
+                                            "FALSE"))
+
+# Create vector of the IDs of the eight stations.
+StationIDs <- unique(c(ghcnd$ID))
+
+# Create data frame of only precipitation data.
+precipitationdata <- ghcnd %>%
+  filter(Element %in% c("PRCP"))
+
+# Construct a version of the data set with a new variable,
+# Value_sqrt_avg, defined as the square root of the monthly
+# averaged precipitation values.
+precipitationdata <- precipitationdata %>% 
+  group_by(ID, Month, Year) %>% 
+  mutate(Value_sqrt_avg = (mean(Value))**(1/2))
+
+# Create vector of the IDs of the eight stations.
+StationIDs <- unique(c(ghcnd$ID))
+
+# Create empty data frame.
+ConfidenceIntervals <- data.frame()
+
+# Complete permutation test for each station.
+for (id in StationIDs){
+  ConfidenceIntervals <- rbind(ConfidenceIntervals,
+                               (c(id,(p_value_CI(id, alpha = 0.05, N = 10000)))))
+}
+
+# Name columns of data.
+colnames(ConfidenceIntervals) <- c("StationID", "P Value", "lower", "upper", "MonteCarloSD")
+
+# Save long-running calculation.
+saveRDS(ConfidenceIntervals, file = "ConfidenceIntervalsDataFile/ ConfidenceIntervals.rds")
+
+# Read long-running calculation.
+ConfidenceIntervals <- readRDS("ConfidenceIntervalsDataFile/ ConfidenceIntervals.rds")
+
+# Display p-values, intervals and Monte-Carlo sds.
+knitr::kable(ConfidenceIntervals)
+
+# QUESTION 2 - SPATIAL WEATHER PREDICTION
+
+# Determine model estimates for k = 0,1,2,3,4
+fit0 <- Model(precipitationdata, 0)
+fit1 <- Model(precipitationdata, 1)
+fit2 <- Model(precipitationdata, 2)
+fit3 <- Model(precipitationdata, 3)
+fit4 <- Model(precipitationdata, 4)
+
+# Create data frame of all model coeffecients.
+CoefficentData <- data.frame(cbind(
+                                c(fit0$coefficients,c(0,0,0,0,0,0,0,0)),
+                                c(fit1$coefficients,c(0,0,0,0,0,0)),
+                                c(fit2$coefficients,c(0,0,0,0)),
+                                c(fit3$coefficients,c(0,0)),
+                                fit4$coefficients))
+
+# Name rows of data frame.
+rownames(CoefficentData) <- c("Intercept", "Longitude",  "Latitude",
+                              "Elevation",   "DecYear ",
+                              "Gamma_c_1", "Gamma_s_1","Gamma_c_2",
+                              "Gamma_s_2","Gamma_c_3", "Gamma_s_3",
+                              "Gamma_c_4", "Gamma_s_4")
+
+# Name columns of data frame.
+colnames(CoefficentData) <- c("M_0", "M_1", "M_2", "M_3", "M_4")
+
+# Display table of model coefficients.
+knitr::kable(CoefficentData)
+
+# First join the predictions given by each model to the given data, along with a label providing the model number.
+modeldata0 <- cbind(precipitationdata,fitted(fit0),
+                    replicate(nrow(precipitationdata),"M_0"))
+modeldata1 <- cbind(precipitationdata,fitted(fit1),
+                    replicate(nrow(precipitationdata),"M_1"))
+modeldata2 <- cbind(precipitationdata,fitted(fit2),
+                    replicate(nrow(precipitationdata),"M_2"))
+modeldata3 <- cbind(precipitationdata,fitted(fit3),
+                    replicate(nrow(precipitationdata),"M_3"))
+modeldata4 <- cbind(precipitationdata,fitted(fit4),
+                    replicate(nrow(precipitationdata),"M_4"))
+
+# Bind all data for all models together.
+modeldata <- rbind(modeldata0,modeldata1,modeldata2,modeldata3,modeldata4)
+
+# Convert month and value columns of data to numerics to allow us to tidy up plot axes.
+modeldata$Month <- as.numeric(modeldata$Month)
+modeldata$Value <- as.numeric(modeldata$Value)
+
+# Rename columns before plotting.
+colnames(modeldata)[15] <- "Prediction"
+colnames(modeldata)[16] <- "Model"
+
+# Create plot of all model fits.
+ModelPlot <- modeldata %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value_sqrt_avg),
+            Value2 = mean(Prediction), .groups = "drop")%>%
+  ggplot() +
+  geom_point(aes(Month, Value, colour = "True")) +
+  geom_line(aes(Month, Value2, colour = "Estimate")) +
+  ggtitle("Model Predictions vs True Data") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Model, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Display plot of models predictions vs true data.
+ModelPlot 
+
+# Create data frame of scores for all models.
+AllScoresModel0 <- Scores(precipitationdata,0)
+AllScoresModel1 <- Scores(precipitationdata,1)
+AllScoresModel2 <- Scores(precipitationdata,2)
+AllScoresModel3 <- Scores(precipitationdata,3)
+AllScoresModel4 <- Scores(precipitationdata,4)
+
+# Save long-running calculation.
+saveRDS(AllScoresModel0, file = "AllScoresModel0DataFile/ AllScoresModel0.rds")
+saveRDS(AllScoresModel1, file = "AllScoresModel1DataFile/ AllScoresModel1.rds")
+saveRDS(AllScoresModel2, file = "AllScoresModel2DataFile/ AllScoresModel2.rds")
+saveRDS(AllScoresModel3, file = "AllScoresModel3DataFile/ AllScoresModel3.rds")
+saveRDS(AllScoresModel4, file = "AllScoresModel4DataFile/ AllScoresModel4.rds")
+
+# Read long-running calculation.
+AllScoresModel0 <- readRDS("AllScoresModel0DataFile/ AllScoresModel0.rds")
+AllScoresModel1 <- readRDS("AllScoresModel1DataFile/ AllScoresModel1.rds")
+AllScoresModel2 <- readRDS("AllScoresModel2DataFile/ AllScoresModel2.rds")
+AllScoresModel3 <- readRDS("AllScoresModel3DataFile/ AllScoresModel3.rds")
+AllScoresModel4 <- readRDS("AllScoresModel4DataFile/ AllScoresModel4.rds")
+
+# Label the scores with coressponding model number.
+AllScoresModel0 <- cbind(AllScoresModel0,
+                    replicate(nrow(AllScoresModel0),"M_0"))
+AllScoresModel1 <- cbind(AllScoresModel1,
+                    replicate(nrow(AllScoresModel1),"M_1"))
+AllScoresModel2 <- cbind(AllScoresModel2,
+                    replicate(nrow(AllScoresModel2),"M_2"))
+AllScoresModel3 <- cbind(AllScoresModel3,
+                    replicate(nrow(AllScoresModel3),"M_3"))
+AllScoresModel4 <- cbind(AllScoresModel4,
+                    replicate(nrow(AllScoresModel4),"M_4"))
+
+# Match column names in order to bind data.
+colnames(AllScoresModel1) <- colnames(AllScoresModel0)
+colnames(AllScoresModel2) <- colnames(AllScoresModel0)
+colnames(AllScoresModel3) <- colnames(AllScoresModel0)
+colnames(AllScoresModel4) <- colnames(AllScoresModel0)
+
+# Bind all data for all models together.
+AllModelScores <- rbind(AllScoresModel0,AllScoresModel1,AllScoresModel2,
+                        AllScoresModel3,AllScoresModel4)
+
+# Rename columns before plotting.
+colnames(AllModelScores)[6] <- c("Model")
+
+# Convert month and value collumns of data to numerics to allow us to tidy up plot axes.
+AllModelScores$Month <- as.numeric(AllModelScores$Month)
+AllModelScores$Value <- as.numeric(AllModelScores$Value)
+
+# Create plot of squared error scores for all models.
+AllModelScoresPlotSE <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreSE")) %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value),.groups = "drop")%>%
+  ggplot(aes(x = Month, y = Value, colour = Model)) +
+  geom_line() +
+  ggtitle("Average Squared Error Scores for All Models")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Create plot of Dawid-Sebestiani scores for all models.
+AllModelScoresPlotDS <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreDS")) %>%
+  group_by(Model, Element, Month) %>%
+  summarise(Value = mean(Value),.groups = "drop")%>%
+  ggplot(aes(x = Month, y = Value, colour = Model)) +
+  geom_line() +
+  ggtitle("Average Dawid-Sebestiani Scores for All Models")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Display plot of SE and DS scores for all models.
+grid.arrange(AllModelScoresPlotSE, AllModelScoresPlotDS, nrow = 1)
+
+# Create data frame of average scores.
+AverageModelScores <- AllModelScores %>%
+  filter(Element %in% c("AverageScoreSE", "AverageScoreDS")) %>%
+  group_by(Model, Element) %>%
+  summarise(Value = mean(Value),.groups = "drop") %>%
+  pivot_wider(names_from = Element, values_from = Value)
+
+# Display data frame of average scores.
+knitr::kable(AverageModelScores)
+
+# Create vector of the Names of the eight stations for plot.
+Names <- unique(c(ghcnd$Name))
+
+# Convert month and value columns of data to numerics to allow us to tidy up plot axes.
+AllScoresModel4$Month <- as.numeric(AllScoresModel4$Month)
+AllScoresModel4$Value <- as.numeric(AllScoresModel4$Value)
+
+# Create plot of the squared error scores at each station, across the year.
+ScoresPlot_SE <- AllScoresModel4 %>%
+  filter(Element %in% c("AverageScoreSE", "StationScoreSE")) %>%
+  group_by(StationID, Element, Month) %>%
+  ggplot(aes(x = Month, y = Value, colour = Element)) +
+  geom_line() +
+  ggtitle("Squared Error Scores for M_3")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Create plot of the Dawid-Sebestiani scores at each station, across the year.
+ScoresPlot_DS <- AllScoresModel4 %>%
+  filter(Element %in% c("AverageScoreDS", "StationScoreDS")) %>%
+  group_by(StationID, Element, Month) %>%
+  ggplot(aes(x = Month, y = Value, colour = Element)) +
+  geom_line() +
+  ggtitle("Dawid-Sebestiani Scores for M_3")+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  facet_wrap(~ Name, scales = "free") + 
+  scale_x_continuous(breaks = seq(1, 12, by = 1))
+
+# Display plot of Standard Error scores for model M_4.
+ScoresPlot_SE
+
+# Display plot of Dawid-Sebestiani scores for model M_4.
+ScoresPlot_DS
+```
